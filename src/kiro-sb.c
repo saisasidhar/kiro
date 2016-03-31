@@ -166,11 +166,11 @@ idle_func (KiroSbPrivate *priv)
         /*main_thread will do the unref upon exit*/
         priv->main_loop = NULL;
         g_debug ("Main loop quit");
-        return G_SOURCE_REMOVE;
+        return FALSE;
     }
 
     if (TRUE == priv->freeze)
-        return G_SOURCE_CONTINUE;
+        return TRUE;
 
     struct KiroTrbInfo *header = (struct KiroTrbInfo *)kiro_trb_get_raw_buffer (priv->trb);
     gulong old_offset = header->offset;
@@ -182,7 +182,7 @@ idle_func (KiroSbPrivate *priv)
         g_hook_list_invoke_check (&(priv->callbacks), FALSE);
     }
 
-    return G_SOURCE_CONTINUE;
+    return TRUE;
 }
 
 

@@ -1,4 +1,17 @@
+#ifdef _MSC_VER
+
+typedef __int8 int8_t;
+typedef unsigned __int8 uint8_t;
+typedef __int16 int16_t;
+typedef unsigned __int16 uint16_t;
+typedef __int32 int32_t;
+typedef unsigned __int32 uint32_t;
+typedef __int64 int64_t;
+typedef unsigned __int64 uint64_t;
+
+#else
 #include <stdint.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include "kiro-server.h"
@@ -8,7 +21,7 @@
 #include <string.h>
 #include <math.h>
 
-
+#define __attribute__(A) /* no op */
 
 static const char g_digits[10][20] = {
     /* 0 */
@@ -129,7 +142,7 @@ print_current_frame (gchar *buffer, guint number, guint width, guint height, GRa
     //Grayscale pattern is the same for every row. Just calculate one single
     //Scanline, so we can reuse it and dont have to do the whole calculation
     //for every row again.
-    char default_line[width];
+    char* default_line = (char*)malloc(width*sizeof(char));
 
     for (guint p = 0; p < width; p++) {
         default_line[p] = (char) ((p * 256) / (width));

@@ -398,9 +398,9 @@ kiro_client_connect (KiroClient *self, const char *address, const char *port)
     priv->ec = priv->conn->channel; //For easy access
     priv->main_loop = g_main_loop_new (NULL, FALSE);
     g_idle_add ((GSourceFunc)stop_client_main_loop, priv);
-    GIOChannel *conn_ec = g_io_channel_unix_new (priv->ec->fd);
+    GIOChannel *conn_ec = g_io_channel_win32_new (priv->ec->channel);
     priv->conn_ec_id = g_io_add_watch (conn_ec, G_IO_IN | G_IO_PRI, process_cm_event, (gpointer)priv);
-    GIOChannel *rdma_ec = g_io_channel_unix_new (priv->conn->recv_cq_channel->fd);
+    GIOChannel *rdma_ec = g_io_channel_win32_new (priv->conn->recv_cq_channel->comp_channel);
     priv->rdma_ec_id = g_io_add_watch (rdma_ec, G_IO_IN | G_IO_PRI, process_rdma_event, (gpointer)priv);
     priv->main_thread = g_thread_new ("KIRO Client main loop", start_client_main_loop, priv->main_loop);
 

@@ -51,21 +51,36 @@ configure_paths(KIRO)
 
 find_package(PkgConfig)
 find_program(GLIB2_MKENUMS glib-mkenums REQUIRED)
-pkg_check_modules(GLIB2 glib-2.0>=2.32 REQUIRED)
-pkg_check_modules(GOBJECT2 gobject-2.0>=2.32 REQUIRED)
-pkg_check_modules(GMODULE2 gmodule-2.0>=2.32 REQUIRED)
-pkg_check_modules(GIO2 gio-2.0>=2.32 REQUIRED)
+pkg_check_modules(GLIB2 glib-2.0>=2.28 REQUIRED)
+pkg_check_modules(GOBJECT2 gobject-2.0>=2.28 REQUIRED)
+pkg_check_modules(GMODULE2 gmodule-2.0>=2.28 REQUIRED)
+pkg_check_modules(GIO2 gio-2.0>=2.28 REQUIRED)
 
 message(STATUS "checking for rdmacm-devel library")
-find_path(RDMACM_DIR rdma/rdma_verbs.h)
-if(NOT RDMACM_DIR)
-    message( FATAL_ERROR "rdma/rdma_verbs.h Not Found! Probably your version of rdmacm-devel is too old. (Needs to be 1.0.15 or newer)" )
+if(WIN32)
+    set(OFED_INCLUDE_DIR C:/OFED_SDK/Inc CACHE FILEPATH " ")
+    set(OFED_LIBRARY_DIR C:/OFED_SDK/lib CACHE FILEPATH " ")
+    #set(RDMACM_DIR C:/Users/IPE/Desktop/workbench/WOF3-2-1/WOF3-2-1/GA/ulp/librdmacm/include CACHE FILEPATH " ")
+    #set(INFINIBAND_DIR C:/Users/IPE/Desktop/workbench/WOF3-2-1/WOF3-2-1/GA/ulp/libibverbs/include CACHE FILEPATH " ")
+    #set(ARPA_DIR C:/Users/IPE/Desktop/workbench/WOF3-2-1/WOF3-2-1/GA/inc/user/linux CACHE FILEPATH " ")
+    #set(RDMA_DIR C:/Users/IPE/Desktop/workbench/WOF3-2-1/WOF3-2-1/GA/inc/user CACHE FILEPATH " ")
 else()
-    message(STATUS "  found rdma/rdma_verbs.h")
+    find_path(RDMACM_DIR rdma/rdma_verbs.h)
+    if(NOT RDMACM_DIR)
+        message( FATAL_ERROR "rdma/rdma_verbs.h Not Found! Probably your version of rdmacm-devel is too old. (Needs to be 1.0.15 or newer)" )
+    else()
+        message(STATUS "  found rdma/rdma_verbs.h")
+    endif()
 endif()
 
 
-include_directories(
+if(WIN32)
+    include_directories(
+    SYSTEM
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+else()
+    include_directories(
     SYSTEM
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${GLIB2_INCLUDE_DIRS}
@@ -73,6 +88,7 @@ include_directories(
     ${GMODULE2_INCLUDE_DIRS}
     ${GIO2_INCLUDE_DIRS}
     ${RDMACM_DIR})
+endif()
 
 set(KIRO_DEPS
     rdmacm
@@ -84,7 +100,9 @@ set(KIRO_DEPS
 
 set(LIBKIRO_BUILD_DIR ${CMAKE_CURRENT_BINARY_DIR})
 
-add_definitions(-Wall -Wextra -std=c99)
+if(CMAKE_COMPILER_IS_GNUCXX)
+    add_definitions(-Wall -Wextra -std=c99)
+endif()
 
 add_subdirectory(src)
 add_subdirectory(test)

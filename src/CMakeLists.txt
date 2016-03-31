@@ -32,7 +32,7 @@ set_target_properties(kiro PROPERTIES
 target_link_libraries(kiro m ${KIRO_DEPS})
 
 
-pkg_check_modules(GOBJECT_INTROSPECTION gobject-introspection-1.0)
+pkg_check_modules(GOBJECT_INTROSPECTION gobject-introspection-1.46)
 
 if (GOBJECT_INTROSPECTION_FOUND)
 
@@ -86,7 +86,7 @@ endif()
 
 
 install(FILES ${kiro_HDRS} kiro-rdma.h DESTINATION ${KIRO_INCLUDEDIR}/kiro)
-install(TARGETS kiro LIBRARY DESTINATION ${KIRO_LIBDIR})
+install(TARGETS kiro LIBRARY DESTINATION ${KIRO_PLUGINDIR} RUNTIME DESTINATION ${KIRO_BINDIR})
 
 if(WITH_GIR)
     install(FILES ${CMAKE_CURRENT_BINARY_DIR}/${GIR_XML}
