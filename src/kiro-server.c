@@ -50,14 +50,10 @@ struct _KiroServerPrivate {
     size_t                      mem_size;        // Server Buffer Size in bytes
 
     gboolean                    close_signal;    // Flag used to signal event listening to stop for server shutdown
-    GMainLoop                   *main_loop;      // Main loop of the server for event polling and handling
-    GIOChannel                  *conn_ec;        // GLib IO Channel encapsulation for the connection manager event channel
     GThread                     *main_thread;    // Main KIRO server thread
 
-    uv_loop_t *uv_event_loop;
-    uv_poll_t *uv_recv_cq_fd_poll;
-    uv_poll_t *uv_ec_fd_poll;
-    uv_idle_t *uv_idle_handle;
+    uv_loop_t *uv_event_loop;                   // libuv event loop handle
+    uv_poll_t *uv_ec_fd_poll;                   // libuv poll handle for event channel file descriptor - the trigger for process_cm_event
 };
 
 
@@ -77,8 +73,7 @@ G_LOCK_DEFINE (realloc_timeout);
 struct kiro_client_connection {
 
     guint                       id;              // Client identification (Easy access)
-    GIOChannel                  *rcv_ec;         // GLib IO Channel encapsulation for receive completions for the client
-    guint                       source_id;       // ID of the source created by g_io_add_watch, needed to remove it again
+    uv_poll_t                   *uv_recv_cq_fd_poll;// libuv poll handle for receive comp q file descriptor - the trigger for process_rdma_event
     struct rdma_cm_id           *conn;           // Connection Manager ID of the client
     struct kiro_rdma_mem        *backup_mri;     // Backup MRI for reallocation
 };
@@ -133,12 +128,12 @@ kiro_server_init (KiroServer *self)
     KiroServerPrivate *priv = KIRO_SERVER_GET_PRIVATE (self);
     memset (priv, 0, sizeof (&priv));
 
-    priv->uv_recv_cq_fd_poll = (uv_poll_t *) malloc (sizeof(uv_poll_t));
     priv->uv_ec_fd_poll = (uv_poll_t *) malloc (sizeof(uv_poll_t));
-    priv->uv_idle_handle = (uv_idle_t *) malloc (sizeof(uv_idle_t));
 
     priv->uv_event_loop = uv_default_loop();
-    priv->uv_event_loop->data = (void *)priv; // Not required currently. For future purposes maybe 
+    // Following is not required in the current scenario. 
+    // data pointer in any uv_handle_t type variable can be used for user defined data
+    priv->uv_event_loop->data = (void *)priv; 
 }
 
 
@@ -261,7 +256,6 @@ server_process_rdma_event (uv_poll_t *handle, int status __attribute__ ((unused)
         return;
     }
 
-    //g_debug ("Got message on condition: %i", condition);
     void *payload = ((GList *)handle->data)->data;
     struct kiro_client_connection *cc = (struct kiro_client_connection *)payload;
     struct ibv_wc wc;
@@ -402,25 +396,21 @@ server_process_cm_event (uv_poll_t *handle, int status __attribute__ ((unused)),
                 ctx->identifier = priv->next_client_id++;
                 ctx->container = cc; // Make the connection aware of its container
 
-                // Fill the client connection container. Also create a
-                // g_io_channel wrapper for the new clients receive queue event
-                // channel and add a main_loop watch to it.
+                // Fill the client connection container. Allocate a uv_poll_t handle and add to clients list
                 cc->id = ctx->identifier;
                 cc->conn = ev->id;
-                // cc->rcv_ec = g_io_channel_unix_new (ev->id->recv_cq_channel->fd);
+                cc->uv_recv_cq_fd_poll = (uv_poll_t *) malloc (sizeof(uv_poll_t));
                 priv->clients = g_list_append (priv->clients, (gpointer)cc);
                 GList *client = g_list_find (priv->clients, (gpointer)cc);
                 if (!client->data || client->data != cc) {
                     g_critical ("Could not add client to list");
                     goto fail;
                 }
-
-                // cc->source_id = g_io_add_watch (cc->rcv_ec, G_IO_IN | G_IO_PRI, server_process_rdma_event, (gpointer)client);
-                // g_io_channel_unref (cc->rcv_ec); // main_loop now holds a reference. We don't need ours any more
-                
-                priv->uv_recv_cq_fd_poll->data = (void*) client;
-                uv_poll_init(priv->uv_event_loop, priv->uv_recv_cq_fd_poll, ev->id->recv_cq_channel->fd);
-                uv_poll_start(priv->uv_recv_cq_fd_poll, UV_READABLE, server_process_rdma_event);
+                // Add client pointer to data for handle
+                cc->uv_recv_cq_fd_poll->data = (void*) client;
+                // Initiate poll on the fd and start polling
+                uv_poll_init(priv->uv_event_loop, cc->uv_recv_cq_fd_poll, ev->id->recv_cq_channel->fd); // Equivalent to g_io_channel_unix_new
+                uv_poll_start(cc->uv_recv_cq_fd_poll, UV_READABLE, server_process_rdma_event);        // Equivalent to g_io_add_watch
 
                 g_debug ("Client connection assigned with ID %u", ctx->identifier);
                 g_debug ("Currently %u clients in total are connected", g_list_length (priv->clients));
@@ -445,7 +435,7 @@ server_process_cm_event (uv_poll_t *handle, int status __attribute__ ((unused)),
             if (client) {
                 g_debug ("Got disconnect request from client ID %u", ctx->identifier);
                 struct kiro_client_connection *cc = (struct kiro_client_connection *)ctx->container;
-                // g_source_remove (cc->source_id); // this also unrefs the GIOChannel of the source. Nice.
+                uv_unref((uv_handle_t *)cc->uv_recv_cq_fd_poll);    // Unref poll handle
                 priv->clients = g_list_delete_link (priv->clients, client);
                 g_free (cc);
                 ctx->container = NULL;
@@ -575,27 +565,13 @@ kiro_server_start (KiroServer *self, const char *address, const char *port, void
         return -1;
     }
 
-    /*
-    priv->main_loop = g_main_loop_new (NULL, FALSE);
-    priv->conn_ec = g_io_channel_unix_new (priv->ec->fd);
-    g_io_add_watch (priv->conn_ec, G_IO_IN | G_IO_PRI, server_process_cm_event, (gpointer)priv);
-    priv->main_thread = g_thread_new ("KIRO Server main loop", start_server_main_loop, priv->main_loop);
-
-    // We gave control to the main_loop (with add_watch) and don't need our ref
-    // any longer
-    g_io_channel_unref (priv->conn_ec);
-    */
-
-    /*
-    uv_idle_init(priv->uv_event_loop, priv->uv_idle_handle);
-    priv->uv_idle_handle->data = (void *) priv;
-    uv_idle_start(priv->uv_idle_handle, eventloop_idle_callback);
-    */
-
+    // Add a reference of priv to data member of poll handle
     priv->uv_ec_fd_poll->data = (void *) priv;
+    // Initiate poll on event channel fd and start poll
     uv_poll_init (priv->uv_event_loop, priv->uv_ec_fd_poll, priv->ec->fd);
     uv_poll_start(priv->uv_ec_fd_poll, UV_READABLE, server_process_cm_event);
-    priv->main_thread = g_thread_new ("KIRO server uvel", start_server_event_loop, (gpointer) priv->uv_event_loop);
+    // Spawn a new thread for libuv event loop to run
+    priv->main_thread = g_thread_new ("KIRO server libuv event loop", start_server_event_loop, (gpointer) priv->uv_event_loop);
 
     g_message ("Enpoint listening");
     return 0;
@@ -612,7 +588,7 @@ disconnect_client (gpointer data, gpointer user_data)
         struct rdma_cm_id *id = cc->conn;
         struct kiro_connection_context *ctx = (struct kiro_connection_context *) (id->context);
         g_debug ("Disconnecting client: %u", ctx->identifier);
-        g_source_remove (cc->source_id);
+        uv_unref((uv_handle_t *)cc->uv_recv_cq_fd_poll);    // Unref poll handle
 
         // Note:
         // The ProtectionDomain needs to be buffered and freed manually.
@@ -790,20 +766,16 @@ kiro_server_stop (KiroServer *self)
     g_list_foreach (priv->clients, disconnect_client, NULL);
     g_list_free (priv->clients);
 
-    // Stop the main loop and clear its memory
-    g_main_loop_quit (priv->main_loop);
-    g_main_loop_unref (priv->main_loop);
-    priv->main_loop = NULL;
+    // Stop event loop
+    uv_stop(priv->uv_event_loop);
 
     // Ask the main thread to join (It probably already has, but we do it
     // anyways. Just in case!)
     g_thread_join (priv->main_thread);
     priv->main_thread = NULL;
 
-    // We don't need the connection management IO channel container any more.
-    // Unref and thus free it.
-    g_io_channel_unref (priv->conn_ec);
-    priv->conn_ec = NULL;
+    // Unref all libuv handles
+    uv_unref((uv_handle_t *)priv->uv_ec_fd_poll);
     priv->close_signal = FALSE;
 
     // kiro_destroy_connection would try to call rdma_disconnect on the given

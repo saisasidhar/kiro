@@ -47,11 +47,7 @@ struct _KiroClientPrivate {
     struct rdma_cm_id           *conn;        // Connection to the Server
 
     gboolean                    close_signal; // Flag used to signal event listening to stop for connection tear-down
-    GMainLoop                   *main_loop;   // Main loop of the server for event polling and handling
-    guint                       rdma_ec_id;   // ID of the GSource that will be created for the rdma_ec GIOChannel
-    guint                       conn_ec_id;   // ID of the GSource that will be created for the conn_ec GIOChannel
     GThread                     *main_thread; // Main KIRO client thread
-
 
     uv_loop_t *uv_event_loop;
     uv_poll_t *uv_recv_cq_fd_poll;
@@ -510,21 +506,8 @@ kiro_client_connect (KiroClient *self, const char *address, const char *port)
     g_message ("Connected to %s:%s", address, port);
 
     priv->ec = priv->conn->channel; //For easy access
-    /*
-       priv->main_loop = g_main_loop_new (NULL, FALSE);
-       g_idle_add ((GSourceFunc)stop_client_main_loop, priv);
-       GIOChannel *conn_ec = g_io_channel_unix_new (priv->ec->fd);
-       priv->conn_ec_id = g_io_add_watch (conn_ec, G_IO_IN | G_IO_PRI, process_cm_event, (gpointer)priv);
-       GIOChannel *rdma_ec = g_io_channel_unix_new (priv->conn->recv_cq_channel->fd);
-       priv->rdma_ec_id = g_io_add_watch (rdma_ec, G_IO_IN | G_IO_PRI, process_rdma_event, (gpointer)priv);
-       priv->main_thread = g_thread_new ("KIRO Client main loop", start_client_main_loop, priv->main_loop);
 
-    // We gave control to the main_loop (with add_watch) and don't need our ref
-    // any longer
-    g_io_channel_unref (conn_ec);
-    g_io_channel_unref (rdma_ec);
-    */
-
+    // Idle handler is executed for every loop iteration. The callback checks for close flag and stops polls and the event loop
     uv_idle_init(priv->uv_event_loop, priv->uv_idle_handle);
     priv->uv_idle_handle->data = (void *) priv;
     uv_idle_start(priv->uv_idle_handle, client_eventloop_idle_callback);
@@ -624,11 +607,9 @@ kiro_client_sync (KiroClient *self)
 }
 
 
-gboolean
-ping_timeout (gpointer data) {
+void
+ping_timeout (uv_timer_t* handle) {
 
-    //Not needed. Void it to prevent 'unused variable' warning
-    (void) data;
     g_debug ("PING timed out");
 
     G_LOCK (ping_time);
@@ -645,8 +626,9 @@ ping_timeout (gpointer data) {
 done:
     G_UNLOCK (ping_time);
 
-    // Return FALSE to automtically stop the timeout from reoccuring
-    return FALSE;
+    uv_timer_stop(handle);
+    uv_unref((uv_handle_t *)handle);
+    return;
 }
 
 
@@ -684,8 +666,11 @@ kiro_client_ping_server (KiroClient *self)
     g_debug ("PING message sent to server.");
     G_UNLOCK (ping_time);
 
-    // Set a two-second timeout for the ping
-    guint timeout = g_timeout_add_seconds (2, ping_timeout, NULL);
+    uv_timer_t *uv_ping_timeout_handle = malloc(sizeof(uv_timer_t));
+    uv_timer_init(priv->uv_event_loop, uv_ping_timeout_handle);
+    uv_timer_start(uv_ping_timeout_handle, ping_timeout, 2000, 2000); 
+    // 4th parameter is timer repeat. We will set uv_timer_stop when the callback is called
+    // for the first time.
 
     //Wait for ping response
     while (ping_time.tv_sec == 0 && ping_time.tv_usec == 0) {};
@@ -702,11 +687,9 @@ kiro_client_ping_server (KiroClient *self)
         goto end;
     }
 
-    // Remove the timeout
-    GSource *timeout_source = g_main_context_find_source_by_id (NULL, timeout);
-    if (timeout_source) {
-        g_source_destroy (timeout_source);
-    }
+    // Stop timer and unref it
+    uv_timer_stop(uv_ping_timeout_handle);
+    uv_unref((uv_handle_t*) uv_ping_timeout_handle);
 
     gint secs = ping_time.tv_sec - local_time.tv_sec;
 
@@ -779,11 +762,12 @@ kiro_client_disconnect (KiroClient *self)
 
     //Shut down event listening
     priv->close_signal = TRUE;
-    while (g_main_loop_is_running (priv->main_loop)) {};
-
-    // Main loop stopped. Clear its memory
-    g_main_loop_unref (priv->main_loop);
-    priv->main_loop = NULL;
+    
+    // Wait for the libuv event loop to stop running and unref all allocated memories for libuv
+    while (uv_loop_alive(priv->uv_event_loop)) {};
+    uv_unref((uv_handle_t *)priv->uv_recv_cq_fd_poll);
+    uv_unref((uv_handle_t *)priv->uv_ec_fd_poll);
+    uv_unref((uv_handle_t *)priv->uv_idle_handle);
 
     // Ask the main thread to join (It probably already has, but we do it
     // anyways. Just in case!)
