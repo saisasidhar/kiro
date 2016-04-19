@@ -25,6 +25,7 @@
 #include <glib.h>
 #include "kiro-messenger.h"
 #include "kiro-rdma.h"
+#include <uv.h>
 
 
 /*
@@ -63,6 +64,11 @@ struct _KiroMessengerPrivate {
 
     GMutex                      connection_handling;
     GMutex                      rdma_handling;
+
+    uv_loop_t *uv_event_loop;
+    uv_poll_t *uv_recv_cq_fd_poll;
+    uv_poll_t *uv_ec_fd_poll;
+    uv_idle_t *uv_idle_handle;
 };
 
 
@@ -109,6 +115,13 @@ kiro_messenger_init (KiroMessenger *self)
     g_hook_list_init (&(priv->send_callbacks), sizeof (GHook));
     g_mutex_init (&priv->connection_handling);
     g_mutex_init (&priv->rdma_handling);
+
+    priv->uv_recv_cq_fd_poll = (uv_poll_t *) malloc (sizeof(uv_poll_t));
+    priv->uv_ec_fd_poll = (uv_poll_t *) malloc (sizeof(uv_poll_t));
+    priv->uv_idle_handle = (uv_idle_t *) malloc (sizeof(uv_idle_t));
+
+    priv->uv_event_loop = uv_default_loop();
+    priv->uv_event_loop->data = (void *)priv; // is this required ?
 }
 
 
@@ -262,20 +275,19 @@ send_msg (struct rdma_cm_id *id, struct kiro_rdma_mem *r, uint32_t imm_data)
 }
 
 
-static gboolean
-process_rdma_event (GIOChannel *source, GIOCondition condition, gpointer data)
+/** Modified to match uv_poll_cb **/
+void
+process_rdma_event (uv_poll_t *handle, int status __attribute__ ((unused)), int events __attribute__ ((unused)))
 {
-    // Right now, we don't need 'source'
-    // Tell the compiler to ignore it by (void)-ing it
-    (void) source;
-    KiroMessengerPrivate *priv = (KiroMessengerPrivate *)data;
+    // Pointer to the structure is stored in data field before initiating polling
+    KiroMessengerPrivate *priv = (KiroMessengerPrivate *)handle->data;
 
     if (!g_mutex_trylock (&priv->rdma_handling)) {
         g_debug ("RDMA handling will wait for the next dispatch.");
-        return TRUE;
+        //return TRUE;
     }
 
-    g_debug ("Got message on condition: %i", condition);
+    //g_debug ("Got message on condition: %i", condition);
     struct rdma_cm_id *conn = NULL;
     if (priv->type == KIRO_MESSENGER_SERVER)
         conn = priv->client;
@@ -595,25 +607,22 @@ done:
 
 end_rmda_eh:
     g_mutex_unlock (&priv->rdma_handling);
-    return TRUE;
+    //return TRUE;
 }
 
-
-static gboolean
-process_cm_event (GIOChannel *source, GIOCondition condition, gpointer data)
+// Modified to match uv_poll_cb **/
+void
+process_cm_event (uv_poll_t *handle, int status __attribute__ ((unused)), int events __attribute__ ((unused)))
 {
-    // Right now, we don't need 'source' and 'condition'
-    // Tell the compiler to ignore them by (void)-ing them
-    (void) source;
-    (void) condition;
-    KiroMessengerPrivate *priv = (KiroMessengerPrivate *)data;
+    // Address to priv is stored in poll handle's data element
+    KiroMessengerPrivate *priv = (KiroMessengerPrivate *)handle->data;
 
     g_debug ("CM event handler triggered");
     if (!g_mutex_trylock (&priv->connection_handling)) {
         // Unsafe to handle connection management right now.
         // Wait for next dispatch.
         g_debug ("Connection handling is busy. Waiting for next dispatch");
-        return TRUE;
+        //return TRUE;
     }
 
     struct rdma_cm_event *active_event;
@@ -676,11 +685,16 @@ process_cm_event (GIOChannel *source, GIOCondition condition, gpointer data)
 
                 // Create a g_io_channel wrapper for the new clients receive
                 // queue event channel and add a main_loop watch to it.
+                /*
                 priv->rdma_ec = g_io_channel_unix_new (priv->client->recv_cq_channel->fd);
                 priv->rdma_ec_id = g_io_add_watch (priv->rdma_ec, G_IO_IN | G_IO_PRI, process_rdma_event, (gpointer)priv);
                 //
+                */
+                priv->uv_recv_cq_fd_poll->data = (void *)priv;
+                uv_poll_init(priv->uv_event_loop, priv->uv_recv_cq_fd_poll, priv->client->recv_cq_channel->fd);
+                uv_poll_start(priv->uv_recv_cq_fd_poll, UV_READABLE, process_rdma_event);
                 // main_loop now holds a reference. We don't need ours any more
-                g_io_channel_unref (priv->rdma_ec);
+                //g_io_channel_unref (priv->rdma_ec);
 
                 break;
 
@@ -700,7 +714,7 @@ process_cm_event (GIOChannel *source, GIOCondition condition, gpointer data)
                 }
                 else {
                     g_debug ("Got disconnect request from client");
-                    g_source_remove (priv->rdma_ec_id); // this also unrefs the GIOChannel of the source. Nice.
+                    //g_source_remove (priv->rdma_ec_id); // this also unrefs the GIOChannel of the source. Nice.
                     priv->client = NULL;
                     priv->rdma_ec = NULL;
                     priv->rdma_ec_id = 0;
@@ -741,35 +755,35 @@ exit:
 
     g_mutex_unlock (&priv->connection_handling);
     g_debug ("CM event handling done");
-    return TRUE;
+    //return TRUE;
 }
 
 
 gpointer
-start_messenger_main_loop (gpointer data)
+start_messenger_event_loop(gpointer data)
 {
-    g_main_loop_run ((GMainLoop *)data);
+    uv_loop_t * default_event_loop= (uv_loop_t *) data;
+    uv_run (default_event_loop, UV_RUN_DEFAULT);
     return NULL;
 }
 
 
-gboolean
-stop_messenger_main_loop (KiroMessengerPrivate *priv)
+/**
+ * Modified from stop_messenger_main_loop
+ */
+void
+eventloop_idle_callback (uv_idle_t *handle)
 {
+    KiroMessengerPrivate *priv = (KiroMessengerPrivate *)handle->data;
+
     if (priv->close_signal) {
-        // Remove the IO Channel Sources from the main loop
-        // This will also unref their respective GIOChannels
-        g_source_remove (priv->conn_ec_id);
-        priv->conn_ec_id = 0;
+        uv_poll_stop(priv->uv_recv_cq_fd_poll);
+        uv_poll_stop(priv->uv_ec_fd_poll);
+        uv_idle_stop(priv->uv_idle_handle);
 
-        g_source_remove (priv->rdma_ec_id);
-        priv->rdma_ec_id = 0;
-
-        g_main_loop_quit (priv->main_loop);
-        g_debug ("Event handling stopped");
-        return FALSE;
+        uv_stop(priv->uv_event_loop);
+        g_debug ("libuv event handling stopped");
     }
-    return TRUE;
 }
 
 
@@ -839,11 +853,16 @@ kiro_messenger_start (KiroMessenger *self, const char *address, const char *port
 
         // Create a g_io_channel wrapper for the new receive
         // queue event channel and add a main_loop watch to it.
+        /*
         priv->rdma_ec = g_io_channel_unix_new (priv->conn->recv_cq_channel->fd);
         priv->rdma_ec_id = g_io_add_watch (priv->rdma_ec, G_IO_IN | G_IO_PRI, process_rdma_event, (gpointer)priv);
         //
+        */
+        priv->uv_recv_cq_fd_poll->data = (void *)priv;
+        uv_poll_init(priv->uv_event_loop, priv->uv_recv_cq_fd_poll, priv->conn->recv_cq_channel->fd);
+        uv_poll_start(priv->uv_recv_cq_fd_poll, UV_READABLE, process_rdma_event);
         // main_loop now holds a reference. We don't need ours any more
-        g_io_channel_unref (priv->rdma_ec);
+        // g_io_channel_unref (priv->rdma_ec);
         g_debug ("Connection to %s:%s established", address, port);
     }
     else {
@@ -862,15 +881,23 @@ kiro_messenger_start (KiroMessenger *self, const char *address, const char *port
         g_critical ("Was unable to migrate connection to new Event Channel: %s", strerror (errno));
         goto fail;
     }
-
+    /*
     priv->main_loop = g_main_loop_new (NULL, FALSE);
     g_idle_add ((GSourceFunc)stop_messenger_main_loop, priv);
     priv->conn_ec = g_io_channel_unix_new (priv->ec->fd);
     priv->conn_ec_id = g_io_add_watch (priv->conn_ec, G_IO_IN | G_IO_PRI, process_cm_event, (gpointer)priv);
-    priv->main_thread = g_thread_new ("KIRO Messenger main loop", start_messenger_main_loop, priv->main_loop);
+    */
+    uv_idle_init(priv->uv_event_loop, priv->uv_idle_handle);
+    priv->uv_idle_handle->data = (void *) priv;
+    uv_idle_start(priv->uv_idle_handle, eventloop_idle_callback);
+
+    priv->uv_ec_fd_poll->data = (void *) priv;
+    uv_poll_init (priv->uv_event_loop, priv->uv_ec_fd_poll, priv->ec->fd);
+    uv_poll_start(priv->uv_ec_fd_poll, UV_READABLE, process_cm_event);
+    priv->main_thread = g_thread_new ("KIRO Messenger uv event loop", start_messenger_event_loop, (gpointer) priv->uv_event_loop);
     // We gave control to the main_loop (with add_watch) and don't need our ref
     // any longer
-    g_io_channel_unref (priv->conn_ec);
+    // g_io_channel_unref (priv->conn_ec);
 
     g_mutex_unlock (&priv->connection_handling);
     return 0;
@@ -1028,10 +1055,11 @@ kiro_messenger_stop (KiroMessenger *self)
     g_debug ("Stopping event handling...");
     priv->close_signal = TRUE;
 
-    // Wait for the main loop to stop and clear its memory
-    while (g_main_loop_is_running (priv->main_loop)) {};
-    g_main_loop_unref (priv->main_loop);
-    priv->main_loop = NULL;
+    // Wait for the libuv event loop to stop running and unref all allocated memories for libuv
+    while (uv_loop_alive(priv->uv_event_loop)) {};
+    uv_unref((uv_handle_t *)priv->uv_recv_cq_fd_poll);
+    uv_unref((uv_handle_t *)priv->uv_ec_fd_poll);
+    uv_unref((uv_handle_t *)priv->uv_idle_handle);
 
     // Ask the main thread to join (It probably already has, but we do it
     // anyways. Just in case!)

@@ -55,6 +55,7 @@ pkg_check_modules(GLIB2 glib-2.0>=2.32 REQUIRED)
 pkg_check_modules(GOBJECT2 gobject-2.0>=2.32 REQUIRED)
 pkg_check_modules(GMODULE2 gmodule-2.0>=2.32 REQUIRED)
 pkg_check_modules(GIO2 gio-2.0>=2.32 REQUIRED)
+pkg_check_modules(UV libuv>=1.0 REQUIRED)
 
 message(STATUS "checking for rdmacm-devel library")
 find_path(RDMACM_DIR rdma/rdma_verbs.h)
@@ -72,7 +73,10 @@ include_directories(
     ${GOBJECT2_INCLUDE_DIRS}
     ${GMODULE2_INCLUDE_DIRS}
     ${GIO2_INCLUDE_DIRS}
-    ${RDMACM_DIR})
+    ${RDMACM_DIR}
+    ${UV_INCLUDE_DIR})
+
+link_directories( ${UV_LIBRARY_DIRS})
 
 set(KIRO_DEPS
     rdmacm
@@ -80,11 +84,12 @@ set(KIRO_DEPS
     ${GLIB2_LIBRARIES}
     ${GOBJECT2_LIBRARIES}
     ${GMODULE2_LIBRARIES}
-    ${GIO2_LIBRARIES})
+    ${GIO2_LIBRARIES}
+    ${UV_LIBRARIES})
 
 set(LIBKIRO_BUILD_DIR ${CMAKE_CURRENT_BINARY_DIR})
 
-add_definitions(-Wall -Wextra -std=c99)
+add_definitions(-Wall -Wextra )
 
 add_subdirectory(src)
 add_subdirectory(test)

@@ -99,8 +99,9 @@ static const guint DIGIT_HEIGHT = 5;
 static void
 print_number (gchar *buffer, guint number, guint x, guint y, guint width)
 {
-    for (guint i = 0; i < DIGIT_WIDTH; i++) {
-        for (guint j = 0; j < DIGIT_HEIGHT; j++) {
+    guint i,j;
+    for (i = 0; i < DIGIT_WIDTH; i++) {
+        for (j = 0; j < DIGIT_HEIGHT; j++) {
             char val = (char) g_digits[number][j * DIGIT_WIDTH + i];
 
             if (val != 0x00) {
@@ -131,13 +132,15 @@ print_current_frame (gchar *buffer, guint number, guint width, guint height, GRa
     //for every row again.
     char default_line[width];
 
-    for (guint p = 0; p < width; p++) {
+    guint p;
+    for (p = 0; p < width; p++) {
         default_line[p] = (char) ((p * 256) / (width));
     }
 
     //Use memcpy to quickly fill every row with the precalculated grayscale
     //pattern
-    for (guint y = 16; y < height; y++) {
+    guint y; // HUP
+    for (y = 16; y < height; y++) {
         guint index = y * width;
         memcpy (buffer + index, &default_line[0], width);
     }
@@ -147,10 +150,11 @@ print_current_frame (gchar *buffer, guint number, guint width, guint height, GRa
     const double mean = 128.0;
     const double std = 32.0;
 
-    for (guint y = (height / 3); y < ((height * 2) / 3); y++) {
+    guint i; // HUP
+    for (y = (height / 3); y < ((height * 2) / 3); y++) {
         guint row_start = y * width;
 
-        for (guint i = (width / 3); i < ((width * 2) / 3); i++) {
+        for (i = (width / 3); i < ((width * 2) / 3); i++) {
             int index = row_start + i;
             double u1 = g_rand_double (rand);
             double u2 = g_rand_double (rand);
