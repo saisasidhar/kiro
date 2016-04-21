@@ -26,6 +26,7 @@
 #include "kiro-messenger.h"
 #include "kiro-rdma.h"
 #include <uv.h>
+#include <sys/epoll.h>
 
 
 /*
@@ -33,6 +34,9 @@
  */
 
 #define KIRO_MESSENGER_GET_PRIVATE(obj) (G_TYPE_INSTANCE_GET_PRIVATE((obj), KIRO_TYPE_MESSENGER, KiroMessengerPrivate))
+
+void fire_callback( uv_work_t *work_req, int status);
+
 
 struct _KiroMessengerPrivate {
 
@@ -66,8 +70,9 @@ struct _KiroMessengerPrivate {
     GMutex                      rdma_handling;
 
     uv_loop_t *uv_event_loop;
-    uv_poll_t *uv_recv_cq_fd_poll;
-    uv_poll_t *uv_ec_fd_poll;
+    uv_work_t *uv_recv_cq_fd_poll;
+    uv_work_t *uv_client_recv_cq_fd_poll;
+    uv_work_t *uv_ec_fd_poll;
     uv_idle_t *uv_idle_handle;
 };
 
@@ -116,8 +121,9 @@ kiro_messenger_init (KiroMessenger *self)
     g_mutex_init (&priv->connection_handling);
     g_mutex_init (&priv->rdma_handling);
 
-    priv->uv_recv_cq_fd_poll = (uv_poll_t *) malloc (sizeof(uv_poll_t));
-    priv->uv_ec_fd_poll = (uv_poll_t *) malloc (sizeof(uv_poll_t));
+    priv->uv_recv_cq_fd_poll = (uv_work_t *) malloc (sizeof(uv_work_t));
+    priv->uv_client_recv_cq_fd_poll = (uv_work_t *) malloc (sizeof(uv_work_t));
+    priv->uv_ec_fd_poll = (uv_work_t *) malloc (sizeof(uv_work_t));
     priv->uv_idle_handle = (uv_idle_t *) malloc (sizeof(uv_idle_t));
 
     priv->uv_event_loop = uv_default_loop();
@@ -274,13 +280,49 @@ send_msg (struct rdma_cm_id *id, struct kiro_rdma_mem *r, uint32_t imm_data)
     return retval;
 }
 
+// This is the function that executes in thread used from the thread poll of libuv
+void start_polling_fd (uv_work_t *work_req)
+{
+    printf("Thread started");
+    int efd = epoll_create1(0);
+    if(-1 == efd)
+    {
+        g_debug("failed to create epoll");
+        exit (-1);
+    }
+
+    struct epoll_event event;
+    struct epoll_event *events;
+
+    // fd to poll is in the data element of work handle
+    int fd_to_poll = *(int *)(work_req->data);
+
+    event.data.fd = fd_to_poll;
+    event.events = EPOLLIN | EPOLLET;
+    int ec = epoll_ctl (efd, EPOLL_CTL_ADD, fd_to_poll, &event);
+
+    if(-1 == ec)
+    {
+        g_debug("failed at epoll_ctrl");
+        exit(-1);
+    }
+    events = calloc(64, sizeof(event));
+    
+    int returned_events = epoll_wait(efd, events, 64, -1);
+    int i;
+    for(i=0; i< returned_events; i++);
+    {
+        if(events[i].events & EPOLLIN)
+            g_debug("A read event was received in the work thread");
+    }
+}
 
 /** Modified to match uv_poll_cb **/
 void
-process_rdma_event (uv_poll_t *handle, int status __attribute__ ((unused)), int events __attribute__ ((unused)))
+process_rdma_event(KiroMessengerPrivate * data)
 {
     // Pointer to the structure is stored in data field before initiating polling
-    KiroMessengerPrivate *priv = (KiroMessengerPrivate *)handle->data;
+    KiroMessengerPrivate *priv = data;
 
     if (!g_mutex_trylock (&priv->rdma_handling)) {
         g_debug ("RDMA handling will wait for the next dispatch.");
@@ -612,10 +654,11 @@ end_rmda_eh:
 
 // Modified to match uv_poll_cb **/
 void
-process_cm_event (uv_poll_t *handle, int status __attribute__ ((unused)), int events __attribute__ ((unused)))
+process_cm_event (KiroMessengerPrivate * data)
 {
     // Address to priv is stored in poll handle's data element
-    KiroMessengerPrivate *priv = (KiroMessengerPrivate *)handle->data;
+    KiroMessengerPrivate *priv = data;
+    int fd_to_poll;
 
     g_debug ("CM event handler triggered");
     if (!g_mutex_trylock (&priv->connection_handling)) {
@@ -690,9 +733,11 @@ process_cm_event (uv_poll_t *handle, int status __attribute__ ((unused)), int ev
                 priv->rdma_ec_id = g_io_add_watch (priv->rdma_ec, G_IO_IN | G_IO_PRI, process_rdma_event, (gpointer)priv);
                 //
                 */
-                priv->uv_recv_cq_fd_poll->data = (void *)priv;
-                uv_poll_init(priv->uv_event_loop, priv->uv_recv_cq_fd_poll, priv->client->recv_cq_channel->fd);
-                uv_poll_start(priv->uv_recv_cq_fd_poll, UV_READABLE, process_rdma_event);
+                fd_to_poll = priv->client->recv_cq_channel->fd;
+                priv->uv_recv_cq_fd_poll->data = (void *)&fd_to_poll; // fd for polling
+                //uv_poll_init(priv->uv_event_loop, priv->uv_recv_cq_fd_poll, priv->client->recv_cq_channel->fd);
+                //uv_poll_start(priv->uv_recv_cq_fd_poll, UV_READABLE, process_rdma_event);
+                uv_queue_work(priv->uv_event_loop, priv->uv_recv_cq_fd_poll, start_polling_fd, fire_callback);
                 // main_loop now holds a reference. We don't need ours any more
                 //g_io_channel_unref (priv->rdma_ec);
 
@@ -758,6 +803,27 @@ exit:
     //return TRUE;
 }
 
+void fire_callback( uv_work_t *work_req, int status)
+{
+    (void) status;
+    uv_loop_t * loop = uv_default_loop();
+    KiroMessengerPrivate *priv = loop->data;
+
+    if(work_req == priv->uv_recv_cq_fd_poll || work_req == priv-> uv_client_recv_cq_fd_poll)
+    {
+        process_rdma_event(priv);
+    }
+    else if (work_req == priv->uv_ec_fd_poll)
+    {
+        process_cm_event(priv);
+    }
+    else
+    {
+        g_debug("Unknown event callback from work queue");
+        exit (-1);
+    }
+}
+
 
 gpointer
 start_messenger_event_loop(gpointer data)
@@ -777,8 +843,12 @@ eventloop_idle_callback (uv_idle_t *handle)
     KiroMessengerPrivate *priv = (KiroMessengerPrivate *)handle->data;
 
     if (priv->close_signal) {
-        uv_poll_stop(priv->uv_recv_cq_fd_poll);
-        uv_poll_stop(priv->uv_ec_fd_poll);
+        // TODO Check for return values of uv_cancel
+        uv_cancel((uv_req_t *) priv->uv_recv_cq_fd_poll);
+        uv_cancel((uv_req_t *) priv->uv_client_recv_cq_fd_poll);
+        uv_cancel((uv_req_t *) priv->uv_ec_fd_poll);
+        //uv_poll_stop(priv->uv_recv_cq_fd_poll);
+        //uv_poll_stop(priv->uv_ec_fd_poll);
         uv_idle_stop(priv->uv_idle_handle);
 
         uv_stop(priv->uv_event_loop);
@@ -792,6 +862,8 @@ kiro_messenger_start (KiroMessenger *self, const char *address, const char *port
 {
     g_return_val_if_fail (self != NULL, -1);
     KiroMessengerPrivate *priv = KIRO_MESSENGER_GET_PRIVATE (self);
+    int client_fd_to_poll; // This is named client because KIRO Client case structure uses this 
+    int fd_to_poll;
 
     if (priv->conn) {
         g_debug ("Messenger already started.");
@@ -858,9 +930,11 @@ kiro_messenger_start (KiroMessenger *self, const char *address, const char *port
         priv->rdma_ec_id = g_io_add_watch (priv->rdma_ec, G_IO_IN | G_IO_PRI, process_rdma_event, (gpointer)priv);
         //
         */
-        priv->uv_recv_cq_fd_poll->data = (void *)priv;
-        uv_poll_init(priv->uv_event_loop, priv->uv_recv_cq_fd_poll, priv->conn->recv_cq_channel->fd);
-        uv_poll_start(priv->uv_recv_cq_fd_poll, UV_READABLE, process_rdma_event);
+        client_fd_to_poll = priv->conn->recv_cq_channel->fd;
+        priv->uv_client_recv_cq_fd_poll->data = (void *)&client_fd_to_poll; // fd for polling
+        // uv_poll_init(priv->uv_event_loop, priv->uv_recv_cq_fd_poll, priv->conn->recv_cq_channel->fd);
+        // uv_poll_start(priv->uv_recv_cq_fd_poll, UV_READABLE, process_rdma_event);
+        uv_queue_work(priv->uv_event_loop, priv->uv_client_recv_cq_fd_poll, start_polling_fd, fire_callback);
         // main_loop now holds a reference. We don't need ours any more
         // g_io_channel_unref (priv->rdma_ec);
         g_debug ("Connection to %s:%s established", address, port);
@@ -891,9 +965,11 @@ kiro_messenger_start (KiroMessenger *self, const char *address, const char *port
     priv->uv_idle_handle->data = (void *) priv;
     uv_idle_start(priv->uv_idle_handle, eventloop_idle_callback);
 
-    priv->uv_ec_fd_poll->data = (void *) priv;
-    uv_poll_init (priv->uv_event_loop, priv->uv_ec_fd_poll, priv->ec->fd);
-    uv_poll_start(priv->uv_ec_fd_poll, UV_READABLE, process_cm_event);
+    fd_to_poll = priv->ec->fd;
+    priv->uv_ec_fd_poll->data = (void *)&fd_to_poll;
+    uv_queue_work (priv->uv_event_loop, priv->uv_ec_fd_poll, start_polling_fd, fire_callback);
+    // uv_poll_init (priv->uv_event_loop, priv->uv_ec_fd_poll, priv->ec->fd);
+    // uv_poll_start(priv->uv_ec_fd_poll, UV_READABLE, process_cm_event);
     priv->main_thread = g_thread_new ("KIRO Messenger uv event loop", start_messenger_event_loop, (gpointer) priv->uv_event_loop);
     // We gave control to the main_loop (with add_watch) and don't need our ref
     // any longer
