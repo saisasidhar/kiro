@@ -25,7 +25,7 @@
 #include <glib.h>
 #include "kiro-messenger.h"
 #include "kiro-rdma.h"
-
+#include <openssl/md5.h>
 
 /*
  * Definition of 'private' structures and members and macro to access them
@@ -320,11 +320,17 @@ rdma_write_message(KiroMessengerPrivate *priv)
       conn = priv->conn;
   struct kiro_connection_context *ctx = (struct kiro_connection_context *)conn->context;
 
+  MD5_CTX mdcontext;
+  MD5_Init(&mdcontext);
+  MD5_Update(&mdcontext, priv->message->rdma_mem->mem, priv->message->rdma_mem->size);
+
   struct kiro_rdma_meta_info *meta_info = (struct kiro_rdma_meta_info *)g_malloc0(sizeof(struct kiro_rdma_meta_info));
   meta_info->start_flag = 42;  // Indicates there is an incoming rdma message for the polling mechanism, also answer to life, the universe and everything
   meta_info->rdma_done = FALSE; // This will be set to true once the actual message is transferred
   meta_info->followup_msg_size = priv->message->rdma_mem->size;
   meta_info->next_message = ctx->peer_rb_tail + sizeof(struct kiro_rdma_meta_info) + priv->message->rdma_mem->size;
+  MD5_Final(meta_info->hash, &mdcontext);
+  g_debug("MD5 hash of this message : %.*s", MD5_DIGEST_LENGTH, meta_info->hash);
 
   struct ibv_mr *meta_info_mr;
 
@@ -873,6 +879,7 @@ idle_handler_of_main_loop (KiroMessengerPrivate *priv)
         {
           g_debug("Payload available, processing now");
 
+          g_debug("MD5 hash sent by peer : %.*s", MD5_DIGEST_LENGTH, meta_info->hash);
           struct pending_message *pm = (struct pending_message *)g_malloc0(sizeof (struct pending_message));
           pm->direction = KIRO_MESSAGE_RECEIVE;
           //pm->handle = msg_in->peer_mri.handle;

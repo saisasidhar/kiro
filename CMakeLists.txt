@@ -55,6 +55,14 @@ pkg_check_modules(GLIB2 glib-2.0>=2.32 REQUIRED)
 pkg_check_modules(GOBJECT2 gobject-2.0>=2.32 REQUIRED)
 pkg_check_modules(GMODULE2 gmodule-2.0>=2.32 REQUIRED)
 pkg_check_modules(GIO2 gio-2.0>=2.32 REQUIRED)
+pkg_search_module(OPENSSL REQUIRED openssl)
+
+if( OPENSSL_FOUND )
+    include_directories(${OPENSSL_INCLUDE_DIRS})
+    message(STATUS "Using OpenSSL ${OPENSSL_VERSION}")
+else()
+    # Error; with REQUIRED, pkg_search_module() will throw an error by it's own
+endif()
 
 message(STATUS "checking for rdmacm-devel library")
 find_path(RDMACM_DIR rdma/rdma_verbs.h)
@@ -72,6 +80,7 @@ include_directories(
     ${GOBJECT2_INCLUDE_DIRS}
     ${GMODULE2_INCLUDE_DIRS}
     ${GIO2_INCLUDE_DIRS}
+    ${OPENSSL_INCLUDE_DIRS}
     ${RDMACM_DIR})
 
 set(KIRO_DEPS
@@ -80,6 +89,7 @@ set(KIRO_DEPS
     ${GLIB2_LIBRARIES}
     ${GOBJECT2_LIBRARIES}
     ${GMODULE2_LIBRARIES}
+    ${OPENSSL_LIBRARIES}
     ${GIO2_LIBRARIES})
 
 set(LIBKIRO_BUILD_DIR ${CMAKE_CURRENT_BINARY_DIR})

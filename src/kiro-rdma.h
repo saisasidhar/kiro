@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/time.h>
+#include <openssl/md5.h>
 #ifndef __KIRO_RDMA_H__
 #define __KIRO_RDMA_H__
 
@@ -117,7 +118,8 @@ struct kiro_rdma_meta_info {
   unsigned char start_flag; // A standard flag which denotes that the data is available to read
   int followup_msg_size;    // Size of the payload
   void *next_message;       // Pointer to the next message
-  gboolean rdma_done;       // This is polled for rdma write completion
+  unsigned char hash[MD5_DIGEST_LENGTH];
+  gboolean rdma_done;       // This is polled for rdma write completions
 };
 
 
