@@ -49,7 +49,7 @@ struct _KiroTrbPrivate {
 };
 
 
-G_DEFINE_TYPE (KiroTrb, kiro_trb, G_TYPE_OBJECT);
+G_DEFINE_TYPE(KiroTrb, kiro_trb, G_TYPE_OBJECT);
 
 
 KiroTrb *
@@ -114,7 +114,7 @@ write_header (KiroTrbPrivate *priv)
     struct KiroTrbInfo *tmp_info = (struct KiroTrbInfo *)priv->mem;
     tmp_info->buffer_size_bytes = priv->buff_size;
     tmp_info->element_size = priv->element_size;
-    tmp_info->offset = (priv->iteration * priv->max_elements) + ((priv->current - priv->frame_top) / priv->element_size);
+    tmp_info->offset = (priv->iteration * priv->max_elements) + (((char *)priv->current - priv->frame_top) / priv->element_size);
     memcpy (priv->mem, tmp_info, sizeof (struct KiroTrbInfo));
 }
 
@@ -194,10 +194,10 @@ kiro_trb_get_element (KiroTrb *self, glong element_in)
         offset %= priv->max_elements;
     }
 
-    gulong relative = (priv->current - priv->frame_top) + (offset * priv->element_size);
+    gulong relative = ((char *)priv->current - priv->frame_top) + (offset * priv->element_size);
     relative %= (priv->buff_size - sizeof(struct KiroTrbInfo));
 
-    return priv->frame_top + relative;
+    return (char *)priv->frame_top + relative;
 }
 
 
@@ -271,13 +271,13 @@ kiro_trb_push (KiroTrb *self, void *element_in)
     if (priv->initialized != 1)
         return -1;
 
-    if ((priv->current + priv->element_size) > (priv->mem + priv->buff_size))
+    if (((char *)priv->current + priv->element_size) > ((char *)priv->mem + priv->buff_size))
         return -1;
 
     memcpy (priv->current, element_in, priv->element_size);
-    priv->current += priv->element_size;
+    (char *)priv->current += priv->element_size;
 
-    if (priv->current >= priv->frame_top + (priv->element_size * priv->max_elements)) {
+    if (priv->current >= (char *)priv->frame_top + (priv->element_size * priv->max_elements)) {
         priv->current = priv->frame_top;
         priv->iteration++;
     }
@@ -296,13 +296,13 @@ kiro_trb_dma_push (KiroTrb *self)
     if (priv->initialized != 1)
         return NULL;
 
-    if ((priv->current + priv->element_size) > (priv->mem + priv->buff_size))
+    if (((char *)priv->current + priv->element_size) > ((char *)priv->mem + priv->buff_size))
         return NULL;
 
     void *mem_out = priv->current;
-    priv->current += priv->element_size;
+    (char *)priv->current += priv->element_size;
 
-    if (priv->current >= priv->frame_top + (priv->element_size * priv->max_elements)) {
+    if (priv->current >= (char *)priv->frame_top + (priv->element_size * priv->max_elements)) {
         priv->current = priv->frame_top;
         priv->iteration++;
     }
@@ -326,8 +326,8 @@ kiro_trb_refresh (KiroTrb *self)
     priv->element_size = tmp->element_size;
     priv->max_elements = (tmp->buffer_size_bytes - sizeof (struct KiroTrbInfo)) / tmp->element_size;
     priv->iteration = tmp->offset / priv->max_elements;
-    priv->frame_top = priv->mem + sizeof (struct KiroTrbInfo);
-    priv->current = priv->frame_top + ((tmp->offset % priv->max_elements) * priv->element_size);
+    priv->frame_top = (char *)priv->mem + sizeof (struct KiroTrbInfo);
+    priv->current = (char *)priv->frame_top + ((tmp->offset % priv->max_elements) * priv->element_size);
     priv->initialized = 1;
 }
 

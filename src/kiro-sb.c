@@ -177,7 +177,7 @@ idle_func (KiroSbPrivate *priv)
     kiro_client_sync_partial (priv->client, 0, sizeof(struct KiroTrbInfo), 0);
     kiro_trb_refresh (priv->trb);
     if ((old_offset != header->offset) && 0 < header->offset) {
-        gulong offset = (gulong) (kiro_trb_get_element (priv->trb, -1) - kiro_trb_get_raw_buffer (priv->trb));
+        gulong offset = (gulong) ((char *)kiro_trb_get_element (priv->trb, -1) - kiro_trb_get_raw_buffer (priv->trb));
         kiro_client_sync_partial (priv->client, offset, kiro_trb_get_element_size (priv->trb), offset);
         g_hook_list_invoke_check (&(priv->callbacks), FALSE);
     }

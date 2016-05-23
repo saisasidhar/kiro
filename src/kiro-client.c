@@ -53,13 +53,34 @@ struct _KiroClientPrivate {
 };
 
 
-G_DEFINE_TYPE (KiroClient, kiro_client, G_TYPE_OBJECT);
+G_DEFINE_TYPE(KiroClient, kiro_client, G_TYPE_OBJECT);
 
 // Temporary storage and lock for PING timing
 G_LOCK_DEFINE (ping_time);
 volatile struct timeval ping_time;
 
 G_LOCK_DEFINE (sync_lock);
+
+/*
+	From : http://stackoverflow.com/a/26085827
+*/
+int gettimeofday(struct timeval * tp, struct timezone * tzp)
+{
+	static const uint64_t EPOCH = ((uint64_t)116444736000000000ULL);
+
+	SYSTEMTIME  system_time;
+	FILETIME    file_time;
+	uint64_t    time;
+
+	GetSystemTime(&system_time);
+	SystemTimeToFileTime(&system_time, &file_time);
+	time = ((uint64_t)file_time.dwLowDateTime);
+	time += ((uint64_t)file_time.dwHighDateTime) << 32;
+
+	tp->tv_sec = (long)((time - EPOCH) / 10000000L);
+	tp->tv_usec = (long)(system_time.wMilliseconds * 1000);
+	return 0;
+}
 
 static inline gboolean
 send_msg (struct rdma_cm_id *id, struct kiro_rdma_mem *r)
@@ -454,7 +475,7 @@ kiro_client_sync_partial (KiroClient *self, gulong remote_offset, gulong size, g
     }
 
     G_LOCK (sync_lock);
-    if (rdma_post_read (priv->conn, priv->conn, ctx->rdma_mr->mem + local_offset, read_size, ctx->rdma_mr->mr, 0, (uint64_t)ctx->peer_mr.addr + remote_offset, ctx->peer_mr.rkey)) {
+    if (rdma_post_read (priv->conn, priv->conn, (char *)ctx->rdma_mr->mem + local_offset, read_size, ctx->rdma_mr->mr, 0, (uint64_t)ctx->peer_mr.addr + remote_offset, ctx->peer_mr.rkey)) {
         g_critical ("Failed to RDMA_READ from server: %s", strerror (errno));
         goto fail;
     }

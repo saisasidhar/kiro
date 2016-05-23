@@ -29,7 +29,7 @@ set_target_properties(kiro PROPERTIES
     VERSION "${LIBKIRO_VERSION_MAJOR}.${LIBKIRO_VERSION_MINOR}"
     SOVERSION ${LIBKIRO_VERSION_PATCH}
 )
-target_link_libraries(kiro m ${KIRO_DEPS})
+target_link_libraries(kiro ${KIRO_DEPS})
 
 
 pkg_check_modules(GOBJECT_INTROSPECTION gobject-introspection-1.46)

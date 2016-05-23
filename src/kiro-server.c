@@ -27,7 +27,8 @@
 #include "kiro-rdma.h"
 #include "kiro-trb.h"
 
-
+// Used for inet_ntoa. Else the linker throws an error - unresolved external symbol
+#pragma comment(lib, "ws2_32.lib")
 /*
  * Definition of 'private' structures and members and macro to access them
  */
@@ -55,7 +56,7 @@ struct _KiroServerPrivate {
 };
 
 
-G_DEFINE_TYPE (KiroServer, kiro_server, G_TYPE_OBJECT);
+G_DEFINE_TYPE(KiroServer, kiro_server, G_TYPE_OBJECT);
 
 
 // List of clients that were asked to realloc their memory
@@ -401,7 +402,7 @@ process_cm_event (GIOChannel *source, GIOCondition condition, gpointer data)
                 // channel and add a main_loop watch to it.
                 cc->id = ctx->identifier;
                 cc->conn = ev->id;
-                cc->rcv_ec = g_io_channel_win32_new (ev->id->recv_cq_channel->comp_channel);
+                cc->rcv_ec = g_io_channel_win32_new_fd (ev->id->recv_cq_channel->comp_channel);
                 priv->clients = g_list_append (priv->clients, (gpointer)cc);
                 GList *client = g_list_find (priv->clients, (gpointer)cc);
                 if (!client->data || client->data != cc) {
@@ -559,7 +560,7 @@ kiro_server_start (KiroServer *self, const char *address, const char *port, void
     }
 
     priv->main_loop = g_main_loop_new (NULL, FALSE);
-    priv->conn_ec = g_io_channel_win32_new (priv->ec->channel);
+    priv->conn_ec = g_io_channel_win32_new_fd (priv->ec->channel);
     g_io_add_watch (priv->conn_ec, G_IO_IN | G_IO_PRI, process_cm_event, (gpointer)priv);
     priv->main_thread = g_thread_new ("KIRO Server main loop", start_server_main_loop, priv->main_loop);
 

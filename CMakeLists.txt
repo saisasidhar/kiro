@@ -90,13 +90,23 @@ else()
     ${RDMACM_DIR})
 endif()
 
-set(KIRO_DEPS
-    rdmacm
-    ibverbs
-    ${GLIB2_LIBRARIES}
-    ${GOBJECT2_LIBRARIES}
-    ${GMODULE2_LIBRARIES}
-    ${GIO2_LIBRARIES})
+if(WIN32)
+    set(KIRO_DEPS
+        librdmacm
+        libibverbs
+        ${GLIB2_LIBRARIES}
+        ${GOBJECT2_LIBRARIES}
+        ${GMODULE2_LIBRARIES}
+        ${GIO2_LIBRARIES})
+else()
+    set(KIRO_DEPS
+        rdmacm
+        ibverbs
+        ${GLIB2_LIBRARIES}
+        ${GOBJECT2_LIBRARIES}
+        ${GMODULE2_LIBRARIES}
+        ${GIO2_LIBRARIES})
+endif()
 
 set(LIBKIRO_BUILD_DIR ${CMAKE_CURRENT_BINARY_DIR})
 
